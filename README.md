@@ -2,12 +2,6 @@
 
 Streamed batch validator for RDF model directories. Loads any number of ShEx schemas and SPARQL queries **once** in a single JVM, then streams each input model through every configured check, emitting one JSON-line per model.
 
-Companion to [materializer](https://github.com/balhoff/materializer) — same streaming/parallelism shape, complementary purpose. Where materializer answers "what can be inferred from this model under this ontology?", jena-batch answers "does this model conform to these shapes / how does it answer these queries?"
-
-## Why
-
-The standard Apache Jena CLIs (`shex`, `arq`, `riot`) each spin up a fresh JVM per invocation. For corpus-scale validation (tens of thousands of small RDF files), JVM cold-start dominates wall time. jena-batch loads the JVM, schemas, and parsed queries **once**, then streams models through them with configurable parallelism — turning a multi-day shell loop into a few minutes of actual work.
-
 ## Usage
 
 ```sh
@@ -84,5 +78,3 @@ Fields are present-but-empty when no checks of that kind were configured. `parse
 sbt stage      # produces target/universal/stage/bin/jena-batch
 sbt docker:publishLocal
 ```
-
-Docker image follows materializer's pattern: `balhoff/jena-batch:latest`.
