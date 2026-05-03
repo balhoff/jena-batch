@@ -28,6 +28,8 @@ final case class JenaBatchConfig(
   shex: List[ShexInput] = Nil,
   @HelpMessage("Repeat to attach a SPARQL SELECT check. Format: id=query.rq. Rows are echoed verbatim into the per-model output under \"sparql.<id>\".")
   query: List[QueryInput] = Nil,
+  @HelpMessage("Repeat to attach a SPARQL ASK exclusion filter. Format: id=query.rq. Each filter must be an ASK query; if it returns true for a model, the model is excluded from all checks and emitted as an \"excluded\" record (one per matching filter) instead of a normal result.")
+  filter: List[QueryInput] = Nil,
   @HelpMessage("Optional single SPARQL SELECT for per-model metadata extraction. Rows are emitted under \"metadata\".")
   metadataQuery: Option[String] = None,
   @HelpMessage("Capture Apache Jena RIOT parser warnings/errors per model. Default: true.")

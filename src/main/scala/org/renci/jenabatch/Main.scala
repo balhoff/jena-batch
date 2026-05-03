@@ -32,14 +32,16 @@ object Main extends ZCaseApp[JenaBatchConfig] {
       _              <- ZIO.succeed(scribe.info(s"Loaded ${loadedShexes.size} ShEx schema(s)"))
       loadedQueries  <- ZIO.foreach(config.query)(Validators.loadQuery)
       _              <- ZIO.succeed(scribe.info(s"Loaded ${loadedQueries.size} SPARQL query(ies)"))
+      loadedFilters  <- ZIO.foreach(config.filter)(Validators.loadFilter)
+      _              <- ZIO.succeed(scribe.info(s"Loaded ${loadedFilters.size} filter(s)"))
       metadataQueryO <- ZIO.foreach(config.metadataQuery)(Validators.loadMetadataQuery)
       sink           <- openSink(config.output)
       start          <- ZIO.succeed(currentTimeMillis())
       stream          = streamModels(config.input, config.parallelism)
                           .mapZIOParUnordered(config.parallelism)(file =>
-                            validateOne(file, loadedShexes, loadedQueries, metadataQueryO, config)
+                            validateOne(file, loadedShexes, loadedQueries, loadedFilters, metadataQueryO, config)
                           )
-      _              <- stream.foreach(result => writeLine(sink, result.toJson))
+      _              <- stream.foreach(lines => ZIO.foreachDiscard(lines)(line => writeLine(sink, line.toJsonLine)))
       stop           <- ZIO.succeed(currentTimeMillis())
       _              <- ZIO.succeed(scribe.info(s"Done in ${(stop - start) / 1000.0}s"))
     } yield ()
@@ -52,9 +54,10 @@ object Main extends ZCaseApp[JenaBatchConfig] {
     file: File,
     shexes: List[LoadedShex],
     queries: List[LoadedQuery],
+    filters: List[LoadedFilter],
     metadataQuery: Option[org.apache.jena.query.Query],
     config: JenaBatchConfig
-  ): Task[ModelResult] = ZIO.attemptBlocking {
+  ): Task[Vector[OutputLine]] = ZIO.attemptBlocking {
     val path = file.getPath
     val start = currentTimeMillis()
 
@@ -67,35 +70,55 @@ object Main extends ZCaseApp[JenaBatchConfig] {
 
     val modelIRI = if (parseFailure.isEmpty) findModelIRI(model) else None
 
-    val shexResults: ListMap[String, ShexResult] =
-      if (parseFailure.isDefined) ListMap.empty
-      else
-        shexes.foldLeft(ListMap.empty[String, ShexResult]) { (acc, loaded) =>
-          acc + (loaded.id -> Validators.runShex(loaded, model.getGraph))
-        }
+    // Filters short-circuit everything else, but only when the parse
+    // succeeded — a parse failure is itself diagnostic information the
+    // consumer should see, and we can't query a model we couldn't read.
+    val matchedFilterIds: Vector[String] =
+      if (parseFailure.isDefined) Vector.empty
+      else filters.iterator.filter(f => Validators.runFilter(f, model)).map(_.id).toVector
 
-    val sparqlResults: ListMap[String, SparqlResult] =
-      if (parseFailure.isDefined) ListMap.empty
-      else
-        queries.foldLeft(ListMap.empty[String, SparqlResult]) { (acc, loaded) =>
-          acc + (loaded.id -> Validators.runSparql(loaded.query, model))
-        }
+    if (matchedFilterIds.nonEmpty) {
+      val durationMs = currentTimeMillis() - start
+      matchedFilterIds.map { id =>
+        ExcludedLine(ExcludedRecord(
+          kind = "excluded",
+          path = path,
+          model_iri = modelIRI,
+          duration_ms = durationMs,
+          filter_id = id
+        ))
+      }
+    } else {
+      val shexResults: ListMap[String, ShexResult] =
+        if (parseFailure.isDefined) ListMap.empty
+        else
+          shexes.foldLeft(ListMap.empty[String, ShexResult]) { (acc, loaded) =>
+            acc + (loaded.id -> Validators.runShex(loaded, model.getGraph))
+          }
 
-    val metadataResult: Option[SparqlResult] =
-      if (parseFailure.isDefined) None
-      else metadataQuery.map(q => Validators.runSparql(q, model))
+      val sparqlResults: ListMap[String, SparqlResult] =
+        if (parseFailure.isDefined) ListMap.empty
+        else
+          queries.foldLeft(ListMap.empty[String, SparqlResult]) { (acc, loaded) =>
+            acc + (loaded.id -> Validators.runSparql(loaded.query, model))
+          }
 
-    ModelResult(
-      path = path,
-      model_iri = modelIRI,
-      duration_ms = currentTimeMillis() - start,
-      parse_failed = parseFailure.isDefined,
-      riot_diagnostics = capturedDiagnostics,
-      shex = shexResults,
-      sparql = sparqlResults,
-      metadata = metadataResult,
-      error = parseFailure
-    )
+      val metadataResult: Option[SparqlResult] =
+        if (parseFailure.isDefined) None
+        else metadataQuery.map(q => Validators.runSparql(q, model))
+
+      Vector(ModelLine(ModelResult(
+        path = path,
+        model_iri = modelIRI,
+        duration_ms = currentTimeMillis() - start,
+        parse_failed = parseFailure.isDefined,
+        riot_diagnostics = capturedDiagnostics,
+        shex = shexResults,
+        sparql = sparqlResults,
+        metadata = metadataResult,
+        error = parseFailure
+      )))
+    }
   }
 
   // -- streaming infrastructure --------------------------------------------

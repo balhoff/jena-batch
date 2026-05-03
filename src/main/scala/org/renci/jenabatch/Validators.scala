@@ -18,6 +18,13 @@ final case class LoadedShex(id: String, schema: ShexSchema, shapeMap: ShapeMap)
 
 final case class LoadedQuery(id: String, query: Query)
 
+/**
+  * A SPARQL ASK query used to short-circuit per-model processing. If any
+  * loaded filter returns true for a given model, the model is reported as
+  * "excluded" and no further checks run on it.
+  */
+final case class LoadedFilter(id: String, query: Query)
+
 object Validators {
 
   // Pull a `Code: <digits>/<NAME>` token out of a riot diagnostic message.
@@ -33,6 +40,21 @@ object Validators {
 
   def loadQuery(input: QueryInput): Task[LoadedQuery] = ZIO.attemptBlocking {
     LoadedQuery(input.id, QueryFactory.read(input.queryPath))
+  }
+
+  /**
+    * Load a filter as an ASK query. Rejects non-ASK queries up front so
+    * misconfiguration fails at startup rather than producing surprising
+    * output mid-stream.
+    */
+  def loadFilter(input: QueryInput): Task[LoadedFilter] = ZIO.attemptBlocking {
+    val query = QueryFactory.read(input.queryPath)
+    if (!query.isAskType) {
+      throw new IllegalArgumentException(
+        s"Filter '${input.id}' must be a SPARQL ASK query (${input.queryPath})"
+      )
+    }
+    LoadedFilter(input.id, query)
   }
 
   def loadMetadataQuery(path: String): Task[Query] = ZIO.attemptBlocking {
@@ -88,6 +110,9 @@ object Validators {
     })
     ShexResult(conformant = report.conforms(), non_conformant_nodes = nonConformant.toVector)
   }
+
+  def runFilter(loaded: LoadedFilter, model: Model): Boolean =
+    Using.resource(QueryExecutionFactory.create(loaded.query, model))(_.execAsk())
 
   def runSparql(query: Query, model: Model): SparqlResult = {
     val vars = query.getResultVars.asScala.toVector

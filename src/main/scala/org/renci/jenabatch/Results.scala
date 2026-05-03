@@ -49,6 +49,45 @@ final case class SparqlResult(
   rows: Vector[ListMap[String, String]]
 )
 
+/**
+  * Emitted in place of a [[ModelResult]] when one or more `--filter` ASK
+  * queries return true for the model. One record per matching filter, so
+  * `filter_id` always identifies a single filter. The `kind` field is the
+  * discriminator that consumers check to distinguish excluded lines from
+  * regular [[ModelResult]] lines in the NDJSON stream — its value is
+  * always the literal string "excluded".
+  *
+  * A model that produces excluded records produces no [[ModelResult]] for
+  * the same run: exclusion short-circuits all checks (ShEx, SPARQL,
+  * metadata) so consumers don't have to reconcile both kinds for the same
+  * input.
+  */
+final case class ExcludedRecord(
+  kind: String,
+  path: String,
+  model_iri: Option[String],
+  duration_ms: Long,
+  filter_id: String
+)
+
+/**
+  * Sum-type for everything written to the NDJSON output. Each variant has
+  * its own JSON shape, so a downstream reader either dispatches on the
+  * presence of a top-level `"kind":"excluded"` field, or schema-discriminates
+  * via `parse_failed` / `riot_diagnostics` which only [[ModelResult]] has.
+  */
+sealed trait OutputLine {
+  def toJsonLine: String
+}
+
+final case class ModelLine(result: ModelResult) extends OutputLine {
+  def toJsonLine: String = result.toJson
+}
+
+final case class ExcludedLine(record: ExcludedRecord) extends OutputLine {
+  def toJsonLine: String = record.toJson
+}
+
 object ModelResult {
 
   // zio-json doesn't ship a built-in ListMap codec, so we round-trip via
@@ -62,4 +101,8 @@ object ModelResult {
   implicit val sparqlResultEncoder: JsonEncoder[SparqlResult] = DeriveJsonEncoder.gen[SparqlResult]
   implicit val modelResultEncoder: JsonEncoder[ModelResult] = DeriveJsonEncoder.gen[ModelResult]
 
+}
+
+object ExcludedRecord {
+  implicit val excludedRecordEncoder: JsonEncoder[ExcludedRecord] = DeriveJsonEncoder.gen[ExcludedRecord]
 }
