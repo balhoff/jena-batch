@@ -29,7 +29,6 @@ final case class RiotDiagnostic(
   severity: String,
   line: Long,
   col: Long,
-  code: Option[String],
   message: String
 )
 

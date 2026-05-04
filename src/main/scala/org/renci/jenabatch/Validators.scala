@@ -27,11 +27,6 @@ final case class LoadedFilter(id: String, query: Query)
 
 object Validators {
 
-  // Pull a `Code: <digits>/<NAME>` token out of a riot diagnostic message.
-  // Riot doesn't expose the structured warning code through the ErrorHandler
-  // API (only severity/message/line/col), so we squint at the message text.
-  private val CodePattern = """Code:\s*\d+/(\w+)""".r
-
   def loadShex(input: ShexInput): Task[LoadedShex] = ZIO.attemptBlocking {
     val schema = Shex.readSchema(input.schemaPath)
     val shapeMap = Shex.readShapeMap(input.mapPath)
@@ -73,21 +68,29 @@ object Validators {
 
     val handler = new ErrorHandler {
       override def warning(message: String, line: Long, col: Long): Unit =
-        diagnostics += RiotDiagnostic("WARN", line, col, extractCode(message), message)
+        diagnostics += RiotDiagnostic("WARN", line, col, message)
 
       override def error(message: String, line: Long, col: Long): Unit =
-        diagnostics += RiotDiagnostic("ERROR", line, col, extractCode(message), message)
+        diagnostics += RiotDiagnostic("ERROR", line, col, message)
 
       override def fatal(message: String, line: Long, col: Long): Unit = {
-        diagnostics += RiotDiagnostic("FATAL", line, col, extractCode(message), message)
+        diagnostics += RiotDiagnostic("FATAL", line, col, message)
         // Defer to Jena's default fatal handler to actually abort the parse.
         ErrorHandlerFactory.errorHandlerStrict.fatal(message, line, col)
       }
     }
 
+    // checking(true) + strict(true) match `riot --validate`: catches lexical
+    // form / language-tag / IRI well-formedness issues that lenient mode lets
+    // through. Diagnostics route through the same ErrorHandler regardless.
     val failure: Option[String] =
       try {
-        RDFParser.create().source(path).errorHandler(handler).parse(model)
+        RDFParser.create()
+          .source(path)
+          .checking(true)
+          .strict(true)
+          .errorHandler(handler)
+          .parse(model)
         None
       } catch {
         case t: Throwable => Some(t.getMessage)
@@ -127,9 +130,6 @@ object Validators {
   }
 
   // -- helpers --------------------------------------------------------------
-
-  private def extractCode(message: String): Option[String] =
-    CodePattern.findFirstMatchIn(message).map(_.group(1))
 
   private def stringifyNode(node: org.apache.jena.graph.Node): String =
     if (node == null) ""
