@@ -98,7 +98,7 @@ object FilterSpec extends ZIOSpecDefault {
       } yield assertTrue(
         lines.size == 1 &&
           lines.head.isInstanceOf[ExcludedLine] &&
-          lines.head.asInstanceOf[ExcludedLine].record.filter_id == "deleted" &&
+          lines.head.asInstanceOf[ExcludedLine].record.filter_ids == Vector("deleted") &&
           lines.head.asInstanceOf[ExcludedLine].record.kind == "excluded" &&
           lines.head.asInstanceOf[ExcludedLine].record.model_iri.contains("http://model.geneontology.org/abc")
       )
@@ -120,7 +120,7 @@ object FilterSpec extends ZIOSpecDefault {
         lines.size == 1 && lines.head.isInstanceOf[ModelLine]
       )
     },
-    test("multiple matching filters emit one ExcludedLine each") {
+    test("multiple matching filters fold into a single ExcludedLine") {
       for {
         qPath1  <- writeTempFile(".rq", askDeleted)
         qPath2  <- writeTempFile(".rq", askDeleted) // same predicate, different id
@@ -135,8 +135,35 @@ object FilterSpec extends ZIOSpecDefault {
                      metadataQuery = None,
                      config = JenaBatchConfig(input = ttlPath.toString, output = "-")
                    )
-        ids = lines.collect { case ExcludedLine(r) => r.filter_id }
-      } yield assertTrue(lines.size == 2 && ids == Vector("first", "second"))
+        ids = lines.collect { case ExcludedLine(r) => r.filter_ids }
+      } yield assertTrue(lines.size == 1 && ids == Vector(Vector("first", "second")))
+    },
+    test("validateOne runs the metadata query on excluded models") {
+      for {
+        qPath    <- writeTempFile(".rq", askDeleted)
+        mPath    <- writeTempFile(".rq",
+                      """PREFIX dc:   <http://purl.org/dc/elements/1.1/>
+                        |PREFIX lego: <http://geneontology.org/lego/>
+                        |SELECT ?modelstate WHERE {
+                        |  ?m a <http://www.w3.org/2002/07/owl#Ontology> ;
+                        |     lego:modelstate ?modelstate .
+                        |}""".stripMargin)
+        ttlPath  <- writeTempFile(".ttl", ttlMarkedDeleted)
+        loaded   <- Validators.loadFilter(QueryInput("deleted", qPath.toString))
+        metaQ    <- Validators.loadMetadataQuery(mPath.toString)
+        lines    <- Main.validateOne(
+                      ttlPath.toFile,
+                      shexes = Nil,
+                      queries = Nil,
+                      filters = List(loaded),
+                      metadataQuery = Some(metaQ),
+                      config = JenaBatchConfig(input = ttlPath.toString, output = "-")
+                    )
+        excluded = lines.head.asInstanceOf[ExcludedLine].record
+      } yield assertTrue(
+        lines.size == 1 &&
+          excluded.metadata.exists(_.rows.exists(_.get("modelstate").contains("delete")))
+      )
     }
   )
 

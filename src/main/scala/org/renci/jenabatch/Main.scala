@@ -78,16 +78,21 @@ object Main extends ZCaseApp[JenaBatchConfig] {
       else filters.iterator.filter(f => Validators.runFilter(f, model)).map(_.id).toVector
 
     if (matchedFilterIds.nonEmpty) {
+      // Run metadata extraction even on excluded models — downstream
+      // consumers (dashboards, audit tools) want title/contributor/taxon
+      // for filtered-but-still-known models. ShEx and SPARQL checks
+      // remain short-circuited.
+      val metadataResult: Option[SparqlResult] =
+        metadataQuery.map(q => Validators.runSparql(q, model))
       val durationMs = currentTimeMillis() - start
-      matchedFilterIds.map { id =>
-        ExcludedLine(ExcludedRecord(
-          kind = "excluded",
-          path = path,
-          model_iri = modelIRI,
-          duration_ms = durationMs,
-          filter_id = id
-        ))
-      }
+      Vector(ExcludedLine(ExcludedRecord(
+        kind = "excluded",
+        path = path,
+        model_iri = modelIRI,
+        duration_ms = durationMs,
+        filter_ids = matchedFilterIds,
+        metadata = metadataResult
+      )))
     } else {
       val shexResults: ListMap[String, ShexResult] =
         if (parseFailure.isDefined) ListMap.empty

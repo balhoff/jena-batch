@@ -50,23 +50,28 @@ final case class SparqlResult(
 
 /**
   * Emitted in place of a [[ModelResult]] when one or more `--filter` ASK
-  * queries return true for the model. One record per matching filter, so
-  * `filter_id` always identifies a single filter. The `kind` field is the
+  * queries return true for the model. One record per excluded model: all
+  * matching filter ids are listed in `filter_ids`. The `kind` field is the
   * discriminator that consumers check to distinguish excluded lines from
   * regular [[ModelResult]] lines in the NDJSON stream — its value is
   * always the literal string "excluded".
   *
-  * A model that produces excluded records produces no [[ModelResult]] for
-  * the same run: exclusion short-circuits all checks (ShEx, SPARQL,
-  * metadata) so consumers don't have to reconcile both kinds for the same
-  * input.
+  * Exclusion short-circuits ShEx and SPARQL checks, but the metadata query
+  * is still run when configured: consumers (e.g. dashboards listing
+  * filtered-but-still-known models) need the model's title, contributors,
+  * etc. to be facetable alongside non-excluded models.
+  *
+  * A model that produces an excluded record produces no [[ModelResult]] for
+  * the same run, so consumers never have to reconcile both kinds for the
+  * same input.
   */
 final case class ExcludedRecord(
   kind: String,
   path: String,
   model_iri: Option[String],
   duration_ms: Long,
-  filter_id: String
+  filter_ids: Vector[String],
+  metadata: Option[SparqlResult]
 )
 
 /**
@@ -103,5 +108,6 @@ object ModelResult {
 }
 
 object ExcludedRecord {
+  import ModelResult.sparqlResultEncoder
   implicit val excludedRecordEncoder: JsonEncoder[ExcludedRecord] = DeriveJsonEncoder.gen[ExcludedRecord]
 }
