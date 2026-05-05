@@ -11,6 +11,12 @@ import caseapp.core.argparser.{ArgParser, SimpleArgParser}
 final case class ShexInput(id: String, schemaPath: String, mapPath: String)
 
 /**
+  * One RDF graph of auxiliary triples attached to a ShEx check. Parsed from
+  * `id=graphPath`, where `id` must match a configured ShEx input.
+  */
+final case class ShexContextInput(id: String, graphPath: String)
+
+/**
   * One SPARQL query, tagged with an id. Parsed from `id=queryPath`.
   */
 final case class QueryInput(id: String, queryPath: String)
@@ -26,6 +32,8 @@ final case class JenaBatchConfig(
   output: String,
   @HelpMessage("Repeat to attach a ShEx check. Format: id=schema.shex=map.shapeMap. Each id appears as a key under \"shex\" in the per-model output.")
   shex: List[ShexInput] = Nil,
+  @HelpMessage("Repeat to attach auxiliary RDF triples to a ShEx check. Format: id=context.ttl. The id must match a --shex id; triples are visible only to that ShEx validation.")
+  shexContext: List[ShexContextInput] = Nil,
   @HelpMessage("Repeat to attach a SPARQL SELECT check. Format: id=query.rq. Rows are echoed verbatim into the per-model output under \"sparql.<id>\".")
   query: List[QueryInput] = Nil,
   @HelpMessage("Repeat to attach a SPARQL ASK exclusion filter. Format: id=query.rq. Each filter must be an ASK query; if it returns true for a model, the model is excluded from all checks and emitted as an \"excluded\" record (one per matching filter) instead of a normal result.")
@@ -73,10 +81,23 @@ object JenaBatchConfig {
     }
   }
 
+  implicit val shexContextInputParser: ArgParser[ShexContextInput] =
+    SimpleArgParser.from[ShexContextInput]("shex context spec (id=path)") { arg =>
+      parseIdPath("shex context spec", arg).map { case (id, path) =>
+        ShexContextInput(id, path)
+      }
+    }
+
   implicit val queryInputParser: ArgParser[QueryInput] = SimpleArgParser.from[QueryInput]("query spec (id=path)") { arg =>
+    parseIdPath("query spec", arg).map { case (id, path) =>
+      QueryInput(id, path)
+    }
+  }
+
+  private def parseIdPath(kind: String, arg: String): Either[MalformedValue, (String, String)] = {
     val idx = arg.indexOf('=')
-    if (idx <= 0 || idx >= arg.length - 1) Left(MalformedValue("query spec", arg))
-    else Right(QueryInput(arg.substring(0, idx), arg.substring(idx + 1)))
+    if (idx <= 0 || idx >= arg.length - 1) Left(MalformedValue(kind, arg))
+    else Right((arg.substring(0, idx), arg.substring(idx + 1)))
   }
 
 }

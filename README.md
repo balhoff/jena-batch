@@ -8,6 +8,7 @@ Streamed batch validator for RDF model directories. Loads any number of ShEx sch
 jena-batch \
     --input /path/to/models/ \
     --shex gpad=gpad-shapes.shex=gpad-shapes.shapeMap \
+    --shex-context gpad=go-hierarchy-closure.ttl \
     --shex other=other-shapes.shex=other-shapes.shapeMap \
     --query disconnected_individuals=sparql/status/disconnected_individuals.rq \
     --query multiply_reified_edges=sparql/status/multiply_reified_edges.rq \
@@ -23,6 +24,7 @@ jena-batch \
 - `--input <path>` — single `.ttl` file or directory of files (recursive).
 - `--output <path>` — NDJSON output. `-` writes to stdout.
 - `--shex id=schema=map` — repeatable. Each tagged ShEx pair appears in the output keyed by `id`.
+- `--shex-context id=path` — repeatable. Loads auxiliary RDF triples for the matching ShEx `id`; those triples are unioned only while running that ShEx validation and are not visible to other ShEx checks, SPARQL checks, filters, or metadata queries. Multiple context files for the same id are merged.
 - `--query id=path` — repeatable. SPARQL SELECT queries; rows emitted verbatim under `sparql.<id>`.
 - `--filter id=path` — repeatable. SPARQL **ASK** exclusion queries. If any filter returns true for a model, the model is excluded from all checks and emits one `excluded` line per matching filter (see [Output](#output)) instead of a normal result. Loaded once at startup; non-ASK queries are rejected immediately.
 - `--metadata-query <path>` — single SPARQL SELECT for per-model metadata extraction; rows under `metadata`.

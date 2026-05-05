@@ -1,6 +1,7 @@
 package org.renci.jenabatch
 
 import org.apache.jena.graph.Graph
+import org.apache.jena.graph.compose.Union
 import org.apache.jena.query.{Query, QueryExecutionFactory, QueryFactory, QuerySolution}
 import org.apache.jena.rdf.model.{Model, ModelFactory}
 import org.apache.jena.riot.RDFParser
@@ -14,7 +15,7 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.Using
 
-final case class LoadedShex(id: String, schema: ShexSchema, shapeMap: ShapeMap)
+final case class LoadedShex(id: String, schema: ShexSchema, shapeMap: ShapeMap, contextGraph: Option[Graph])
 
 final case class LoadedQuery(id: String, query: Query)
 
@@ -27,10 +28,11 @@ final case class LoadedFilter(id: String, query: Query)
 
 object Validators {
 
-  def loadShex(input: ShexInput): Task[LoadedShex] = ZIO.attemptBlocking {
+  def loadShex(input: ShexInput, contextPaths: List[String] = Nil): Task[LoadedShex] = ZIO.attemptBlocking {
     val schema = Shex.readSchema(input.schemaPath)
     val shapeMap = Shex.readShapeMap(input.mapPath)
-    LoadedShex(input.id, schema, shapeMap)
+    val contextGraph = loadContextGraph(contextPaths)
+    LoadedShex(input.id, schema, shapeMap, contextGraph)
   }
 
   def loadQuery(input: QueryInput): Task[LoadedQuery] = ZIO.attemptBlocking {
@@ -99,7 +101,8 @@ object Validators {
   }
 
   def runShex(loaded: LoadedShex, graph: Graph): ShexResult = {
-    val report = ShexValidator.get().validate(graph, loaded.schema, loaded.shapeMap)
+    val validationGraph = loaded.contextGraph.map(context => new Union(graph, context)).getOrElse(graph)
+    val report = ShexValidator.get().validate(validationGraph, loaded.schema, loaded.shapeMap)
     val nonConformant = mutable.ArrayBuffer.empty[NonConformantNode]
     report.forEachReport(new Consumer[ShexRecord] {
       override def accept(entry: ShexRecord): Unit =
@@ -130,6 +133,20 @@ object Validators {
   }
 
   // -- helpers --------------------------------------------------------------
+
+  private def loadContextGraph(paths: List[String]): Option[Graph] =
+    if (paths.isEmpty) None
+    else {
+      val model = ModelFactory.createDefaultModel()
+      paths.foreach { path =>
+        RDFParser.create()
+          .source(path)
+          .checking(true)
+          .strict(true)
+          .parse(model)
+      }
+      Some(model.getGraph)
+    }
 
   private def stringifyNode(node: org.apache.jena.graph.Node): String =
     if (node == null) ""

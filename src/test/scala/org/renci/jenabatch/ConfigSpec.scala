@@ -20,6 +20,14 @@ object ConfigSpec extends ZIOSpecDefault {
       val parsed = JenaBatchConfig.shexInputParser.apply(None, "=foo.shex=bar.shapeMap")
       assertTrue(parsed.isLeft)
     },
+    test("ShexContextInput parser splits on first '=' only") {
+      val parsed = JenaBatchConfig.shexContextInputParser.apply(None, "gpad=path/with=equals.ttl")
+      assertTrue(parsed == Right(ShexContextInput("gpad", "path/with=equals.ttl")))
+    },
+    test("ShexContextInput parser rejects empty id") {
+      val parsed = JenaBatchConfig.shexContextInputParser.apply(None, "=context.ttl")
+      assertTrue(parsed.isLeft)
+    },
     test("QueryInput parser splits on first '=' only") {
       val parsed = JenaBatchConfig.queryInputParser.apply(None, "disconnected=path/to/q.rq")
       assertTrue(parsed == Right(QueryInput("disconnected", "path/to/q.rq")))

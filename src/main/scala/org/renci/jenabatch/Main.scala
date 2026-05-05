@@ -28,8 +28,12 @@ object Main extends ZCaseApp[JenaBatchConfig] {
   override def run(config: JenaBatchConfig, arg: RemainingArgs): URIO[Scope, ExitCode] = {
     val program = for {
       _              <- ZIO.succeed(scribe.info(s"Starting jena-batch on ${config.input} (parallelism=${config.parallelism})"))
-      loadedShexes   <- ZIO.foreach(config.shex)(Validators.loadShex)
-      _              <- ZIO.succeed(scribe.info(s"Loaded ${loadedShexes.size} ShEx schema(s)"))
+      shexContexts    = config.shexContext.groupMap(_.id)(_.graphPath)
+      _              <- validateShexContextIds(config.shex, shexContexts.keySet)
+      loadedShexes   <- ZIO.foreach(config.shex)(input =>
+                          Validators.loadShex(input, shexContexts.getOrElse(input.id, Nil))
+                        )
+      _              <- ZIO.succeed(scribe.info(s"Loaded ${loadedShexes.size} ShEx schema(s) with ${config.shexContext.size} context graph(s)"))
       loadedQueries  <- ZIO.foreach(config.query)(Validators.loadQuery)
       _              <- ZIO.succeed(scribe.info(s"Loaded ${loadedQueries.size} SPARQL query(ies)"))
       loadedFilters  <- ZIO.foreach(config.filter)(Validators.loadFilter)
@@ -127,6 +131,17 @@ object Main extends ZCaseApp[JenaBatchConfig] {
   }
 
   // -- streaming infrastructure --------------------------------------------
+
+  def validateShexContextIds(shexes: List[ShexInput], contextIds: Iterable[String]): Task[Unit] = {
+    val shexIds = shexes.iterator.map(_.id).toSet
+    val unknown = contextIds.toSet.diff(shexIds).toVector.sorted
+    if (unknown.isEmpty) ZIO.unit
+    else {
+      ZIO.fail(new IllegalArgumentException(
+        s"--shex-context id(s) do not match any --shex id: ${unknown.mkString(", ")}"
+      ))
+    }
+  }
 
   def streamModels(path: String, parallelism: Int): Stream[Throwable, File] = {
     val fileOrDirectory = new File(path)
