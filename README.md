@@ -1,6 +1,6 @@
 # jena-batch
 
-Streamed batch validator for RDF model directories. Loads any number of ShEx schemas and SPARQL queries **once** in a single JVM, then streams each input model through every configured check, emitting one JSON-line per model.
+Streamed batch validator for RDF model directories. Loads any number of ShEx schemas and SPARQL queries **once** in a single JVM, then streams each input model through the configured checks, emitting one NDJSON record per model.
 
 ## Usage
 
@@ -26,7 +26,7 @@ jena-batch \
 - `--shex id=schema=map` — repeatable. Each tagged ShEx pair appears in the output keyed by `id`.
 - `--shex-context id=path` — repeatable. Loads auxiliary RDF triples for the matching ShEx `id`; those triples are unioned only while running that ShEx validation and are not visible to other ShEx checks, SPARQL checks, filters, or metadata queries. Multiple context files for the same id are merged.
 - `--query id=path` — repeatable. SPARQL SELECT queries; rows emitted verbatim under `sparql.<id>`.
-- `--filter id=path` — repeatable. SPARQL **ASK** exclusion queries. If any filter returns true for a model, the model is excluded from all checks and emits one `excluded` line per matching filter (see [Output](#output)) instead of a normal result. Loaded once at startup; non-ASK queries are rejected immediately.
+- `--filter id=path` — repeatable. SPARQL **ASK** exclusion queries. If any filter returns true for a model, the model emits one `excluded` line instead of a normal result. ShEx and SPARQL checks are skipped, metadata still runs when configured, and all matching filters are listed in `filter_ids` (see [Output](#output)). Loaded once at startup; non-ASK queries are rejected immediately.
 - `--metadata-query <path>` — single SPARQL SELECT for per-model metadata extraction; rows under `metadata`.
 - `--capture-riot true|false` — capture Apache Jena RIOT parser warnings/errors (default: true).
 - `--parallelism <int>` — concurrent models in flight (default: 16).
@@ -46,7 +46,6 @@ One JSON object per model per line. Schema:
   "parse_failed": false,
   "riot_diagnostics": [
     {"severity": "WARN", "line": 215, "col": 51,
-     "code": "PORT_SHOULD_NOT_BE_EMPTY",
      "message": "Not advised IRI: <http://http://...>"}
   ],
   "shex": {
@@ -74,19 +73,19 @@ One JSON object per model per line. Schema:
 }
 ```
 
-Fields are present-but-empty when no checks of that kind were configured. `parse_failed: true` means the file did not parse as RDF; `shex` / `sparql` / `metadata` will be empty in that case and `error` will hold the parser's message.
+`shex` and `sparql` are empty objects when no checks of that kind were configured or when parsing failed. `metadata` is either a SPARQL result object or `null`. `parse_failed: true` means the file did not parse as RDF; checks are skipped and `error` holds the parser's message.
 
 ### Excluded lines
 
-When `--filter` queries are configured, a model that matches one or more filters emits an `excluded` line per matching filter **instead of** a normal result line — its checks (ShEx, SPARQL, metadata) are skipped entirely.
+When `--filter` queries are configured, a model that matches one or more filters emits one `excluded` line **instead of** a normal result line — its ShEx and SPARQL checks are skipped entirely, and all matching filters are listed in `filter_ids`.
 
 ```json
-{"kind": "excluded", "path": "models/abc123.ttl", "model_iri": "http://model.geneontology.org/abc123", "duration_ms": 12, "filter_id": "deleted"}
+{"kind": "excluded", "path": "models/abc123.ttl", "model_iri": "http://model.geneontology.org/abc123", "duration_ms": 12, "filter_ids": ["deleted"], "metadata": null}
 ```
 
 Excluded lines are distinguished from regular result lines by the top-level `"kind": "excluded"` field, which a normal result line never carries. A model that produces excluded lines never also produces a result line in the same run; consumers can partition the stream on `kind` without having to reconcile the two.
 
-If multiple filters match the same model, one excluded line is emitted per match. Filters are evaluated only when the model parsed successfully — a parse failure produces a normal `parse_failed: true` result line so the diagnostics aren't lost.
+If multiple filters match the same model, all matching ids appear in `filter_ids`. Filters are evaluated only when the model parsed successfully — a parse failure produces a normal `parse_failed: true` result line so the diagnostics aren't lost. When `--metadata-query` is configured, metadata is still included on excluded records.
 
 ## Build
 

@@ -7,8 +7,8 @@ import java.nio.file.{Files, Path}
 
 object ShexContextSpec extends ZIOSpecDefault {
 
-  private def writeTempFile(suffix: String, contents: String): UIO[Path] =
-    ZIO.succeed {
+  private def writeTempFile(suffix: String, contents: String): Task[Path] =
+    ZIO.attemptBlocking {
       val path = Files.createTempFile("jena-batch-shex-context-test-", suffix)
       Files.writeString(path, contents)
       path.toFile.deleteOnExit()

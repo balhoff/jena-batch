@@ -1,6 +1,7 @@
 package org.renci.jenabatch
 
 import org.apache.jena.rdf.model.ModelFactory
+import org.apache.jena.riot.{Lang, RDFParser}
 import zio._
 import zio.test._
 
@@ -9,12 +10,19 @@ import java.nio.file.{Files, Path}
 object FilterSpec extends ZIOSpecDefault {
 
   /** Write `contents` to a fresh temp file with the given extension. */
-  private def writeTempFile(suffix: String, contents: String): UIO[Path] =
-    ZIO.succeed {
+  private def writeTempFile(suffix: String, contents: String): Task[Path] =
+    ZIO.attemptBlocking {
       val path = Files.createTempFile("jena-batch-filter-test-", suffix)
       Files.writeString(path, contents)
       path.toFile.deleteOnExit()
       path
+    }
+
+  private def parseTurtle(contents: String): Task[org.apache.jena.rdf.model.Model] =
+    ZIO.attemptBlocking {
+      val model = ModelFactory.createDefaultModel()
+      RDFParser.fromString(contents, Lang.TURTLE).parse(model)
+      model
     }
 
   private val askDeleted =
@@ -64,23 +72,17 @@ object FilterSpec extends ZIOSpecDefault {
       for {
         qPath  <- writeTempFile(".rq", askDeleted)
         loaded <- Validators.loadFilter(QueryInput("deleted", qPath.toString))
-        model  <- ZIO.succeed {
-                    val m = ModelFactory.createDefaultModel()
-                    m.read(new java.io.StringReader(ttlMarkedDeleted), null, "TTL")
-                    m
-                  }
-      } yield assertTrue(Validators.runFilter(loaded, model))
+        model  <- parseTurtle(ttlMarkedDeleted)
+        result <- Validators.runFilter(loaded, model)
+      } yield assertTrue(result)
     },
     test("runFilter returns false when the ASK doesn't match") {
       for {
         qPath  <- writeTempFile(".rq", askDeleted)
         loaded <- Validators.loadFilter(QueryInput("deleted", qPath.toString))
-        model  <- ZIO.succeed {
-                    val m = ModelFactory.createDefaultModel()
-                    m.read(new java.io.StringReader(ttlActive), null, "TTL")
-                    m
-                  }
-      } yield assertTrue(!Validators.runFilter(loaded, model))
+        model  <- parseTurtle(ttlActive)
+        result <- Validators.runFilter(loaded, model)
+      } yield assertTrue(!result)
     },
     test("validateOne emits an ExcludedLine when a filter matches") {
       for {
@@ -95,12 +97,12 @@ object FilterSpec extends ZIOSpecDefault {
                      metadataQuery = None,
                      config = JenaBatchConfig(input = ttlPath.toString, output = "-")
                    )
+        excluded = lines.collectFirst { case ExcludedLine(record) => record }
       } yield assertTrue(
         lines.size == 1 &&
-          lines.head.isInstanceOf[ExcludedLine] &&
-          lines.head.asInstanceOf[ExcludedLine].record.filter_ids == Vector("deleted") &&
-          lines.head.asInstanceOf[ExcludedLine].record.kind == "excluded" &&
-          lines.head.asInstanceOf[ExcludedLine].record.model_iri.contains("http://model.geneontology.org/abc")
+          excluded.exists(_.filter_ids == Vector("deleted")) &&
+          excluded.exists(_.kind == "excluded") &&
+          excluded.exists(_.model_iri.contains("http://model.geneontology.org/abc"))
       )
     },
     test("validateOne emits a normal ModelLine when no filter matches") {
@@ -117,7 +119,7 @@ object FilterSpec extends ZIOSpecDefault {
                      config = JenaBatchConfig(input = ttlPath.toString, output = "-")
                    )
       } yield assertTrue(
-        lines.size == 1 && lines.head.isInstanceOf[ModelLine]
+        lines.size == 1 && lines.exists { case ModelLine(_) => true; case _ => false }
       )
     },
     test("multiple matching filters fold into a single ExcludedLine") {
@@ -159,10 +161,10 @@ object FilterSpec extends ZIOSpecDefault {
                       metadataQuery = Some(metaQ),
                       config = JenaBatchConfig(input = ttlPath.toString, output = "-")
                     )
-        excluded = lines.head.asInstanceOf[ExcludedLine].record
+        excluded = lines.collectFirst { case ExcludedLine(record) => record }
       } yield assertTrue(
         lines.size == 1 &&
-          excluded.metadata.exists(_.rows.exists(_.get("modelstate").contains("delete")))
+          excluded.exists(_.metadata.exists(_.rows.exists(_.get("modelstate").contains("delete"))))
       )
     }
   )

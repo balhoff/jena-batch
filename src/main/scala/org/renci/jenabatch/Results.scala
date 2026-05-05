@@ -94,10 +94,10 @@ final case class ExcludedLine(record: ExcludedRecord) extends OutputLine {
 
 object ModelResult {
 
-  // zio-json doesn't ship a built-in ListMap codec, so we round-trip via
-  // a Vector of pairs to preserve insertion order.
+  // zio-json doesn't ship a built-in ListMap codec. Encode it as a JSON object
+  // while keeping the ListMap instance's iteration order.
   implicit def listMapEncoder[V: JsonEncoder]: JsonEncoder[ListMap[String, V]] =
-    JsonEncoder.map[String, V].contramap(_.toMap)
+    JsonEncoder.map[String, V].contramap(listMap => listMap: Map[String, V])
 
   implicit val riotDiagnosticEncoder: JsonEncoder[RiotDiagnostic] = DeriveJsonEncoder.gen[RiotDiagnostic]
   implicit val nonConformantNodeEncoder: JsonEncoder[NonConformantNode] = DeriveJsonEncoder.gen[NonConformantNode]

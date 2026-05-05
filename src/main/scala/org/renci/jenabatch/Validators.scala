@@ -2,11 +2,12 @@ package org.renci.jenabatch
 
 import org.apache.jena.graph.Graph
 import org.apache.jena.graph.compose.Union
-import org.apache.jena.query.{Query, QueryExecutionFactory, QueryFactory, QuerySolution}
+import org.apache.jena.query.{ARQ, Query, QueryExecutionFactory, QueryFactory, QuerySolution}
 import org.apache.jena.rdf.model.{Model, ModelFactory}
 import org.apache.jena.riot.RDFParser
 import org.apache.jena.riot.system.{ErrorHandler, ErrorHandlerFactory}
 import org.apache.jena.shex.{ShapeMap, Shex, ShexRecord, ShexSchema, ShexStatus, ShexValidator}
+import org.apache.jena.sys.JenaSystem
 import zio._
 
 import java.util.function.Consumer
@@ -14,6 +15,7 @@ import scala.collection.immutable.ListMap
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.Using
+import scala.util.control.NonFatal
 
 final case class LoadedShex(id: String, schema: ShexSchema, shapeMap: ShapeMap, contextGraph: Option[Graph])
 
@@ -28,14 +30,25 @@ final case class LoadedFilter(id: String, query: Query)
 
 object Validators {
 
-  def loadShex(input: ShexInput, contextPaths: List[String] = Nil): Task[LoadedShex] = ZIO.attemptBlocking {
+  private lazy val jenaInitialized: Unit = {
+    JenaSystem.init()
+    ARQ.init()
+  }
+
+  def initializeJena: Task[Unit] =
+    ZIO.attempt(jenaInitialized).unit
+
+  private def jenaBlocking[A](effect: => A): Task[A] =
+    initializeJena *> ZIO.attemptBlocking(effect)
+
+  def loadShex(input: ShexInput, contextPaths: List[String] = Nil): Task[LoadedShex] = jenaBlocking {
     val schema = Shex.readSchema(input.schemaPath)
     val shapeMap = Shex.readShapeMap(input.mapPath)
     val contextGraph = loadContextGraph(contextPaths)
     LoadedShex(input.id, schema, shapeMap, contextGraph)
   }
 
-  def loadQuery(input: QueryInput): Task[LoadedQuery] = ZIO.attemptBlocking {
+  def loadQuery(input: QueryInput): Task[LoadedQuery] = jenaBlocking {
     LoadedQuery(input.id, QueryFactory.read(input.queryPath))
   }
 
@@ -44,7 +57,7 @@ object Validators {
     * misconfiguration fails at startup rather than producing surprising
     * output mid-stream.
     */
-  def loadFilter(input: QueryInput): Task[LoadedFilter] = ZIO.attemptBlocking {
+  def loadFilter(input: QueryInput): Task[LoadedFilter] = jenaBlocking {
     val query = QueryFactory.read(input.queryPath)
     if (!query.isAskType) {
       throw new IllegalArgumentException(
@@ -54,7 +67,7 @@ object Validators {
     LoadedFilter(input.id, query)
   }
 
-  def loadMetadataQuery(path: String): Task[Query] = ZIO.attemptBlocking {
+  def loadMetadataQuery(path: String): Task[Query] = jenaBlocking {
     QueryFactory.read(path)
   }
 
@@ -64,43 +77,44 @@ object Validators {
     * accumulated diagnostics; on a fatal parse failure, returns the
     * partial-or-empty model alongside whatever diagnostics arrived first.
     */
-  def parseWithDiagnostics(path: String): (Model, Vector[RiotDiagnostic], Option[String]) = {
-    val model = ModelFactory.createDefaultModel()
-    val diagnostics = mutable.ArrayBuffer.empty[RiotDiagnostic]
+  def parseWithDiagnostics(path: String): Task[(Model, Vector[RiotDiagnostic], Option[String])] =
+    jenaBlocking {
+      val model = ModelFactory.createDefaultModel()
+      val diagnostics = mutable.ArrayBuffer.empty[RiotDiagnostic]
 
-    val handler = new ErrorHandler {
-      override def warning(message: String, line: Long, col: Long): Unit =
-        diagnostics += RiotDiagnostic("WARN", line, col, message)
+      val handler = new ErrorHandler {
+        override def warning(message: String, line: Long, col: Long): Unit =
+          diagnostics += RiotDiagnostic("WARN", line, col, message)
 
-      override def error(message: String, line: Long, col: Long): Unit =
-        diagnostics += RiotDiagnostic("ERROR", line, col, message)
+        override def error(message: String, line: Long, col: Long): Unit =
+          diagnostics += RiotDiagnostic("ERROR", line, col, message)
 
-      override def fatal(message: String, line: Long, col: Long): Unit = {
-        diagnostics += RiotDiagnostic("FATAL", line, col, message)
-        // Defer to Jena's default fatal handler to actually abort the parse.
-        ErrorHandlerFactory.errorHandlerStrict.fatal(message, line, col)
+        override def fatal(message: String, line: Long, col: Long): Unit = {
+          diagnostics += RiotDiagnostic("FATAL", line, col, message)
+          // Defer to Jena's default fatal handler to actually abort the parse.
+          ErrorHandlerFactory.errorHandlerStrict.fatal(message, line, col)
+        }
       }
+
+      // checking(true) + strict(true) match `riot --validate`: catches lexical
+      // form / language-tag / IRI well-formedness issues that lenient mode lets
+      // through. Diagnostics route through the same ErrorHandler regardless.
+      val failure: Option[String] =
+        try {
+          RDFParser.create()
+            .source(path)
+            .checking(true)
+            .strict(true)
+            .errorHandler(handler)
+            .parse(model)
+          None
+        } catch {
+          case NonFatal(t) => Some(Option(t.getMessage).getOrElse(t.toString))
+        }
+      (model, diagnostics.toVector, failure)
     }
 
-    // checking(true) + strict(true) match `riot --validate`: catches lexical
-    // form / language-tag / IRI well-formedness issues that lenient mode lets
-    // through. Diagnostics route through the same ErrorHandler regardless.
-    val failure: Option[String] =
-      try {
-        RDFParser.create()
-          .source(path)
-          .checking(true)
-          .strict(true)
-          .errorHandler(handler)
-          .parse(model)
-        None
-      } catch {
-        case t: Throwable => Some(t.getMessage)
-      }
-    (model, diagnostics.toVector, failure)
-  }
-
-  def runShex(loaded: LoadedShex, graph: Graph): ShexResult = {
+  def runShex(loaded: LoadedShex, graph: Graph): Task[ShexResult] = jenaBlocking {
     val validationGraph = loaded.contextGraph.map(context => new Union(graph, context)).getOrElse(graph)
     val report = ShexValidator.get().validate(validationGraph, loaded.schema, loaded.shapeMap)
     val nonConformant = mutable.ArrayBuffer.empty[NonConformantNode]
@@ -117,10 +131,12 @@ object Validators {
     ShexResult(conformant = report.conforms(), non_conformant_nodes = nonConformant.toVector)
   }
 
-  def runFilter(loaded: LoadedFilter, model: Model): Boolean =
-    Using.resource(QueryExecutionFactory.create(loaded.query, model))(_.execAsk())
+  def runFilter(loaded: LoadedFilter, model: Model): Task[Boolean] =
+    jenaBlocking {
+      Using.resource(QueryExecutionFactory.create(loaded.query, model))(_.execAsk())
+    }
 
-  def runSparql(query: Query, model: Model): SparqlResult = {
+  def runSparql(query: Query, model: Model): Task[SparqlResult] = jenaBlocking {
     val vars = query.getResultVars.asScala.toVector
     val rows = mutable.ArrayBuffer.empty[ListMap[String, String]]
     Using.resource(QueryExecutionFactory.create(query, model)) { exec =>
