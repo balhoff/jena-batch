@@ -33,6 +33,10 @@ This is deliberately a sibling project to [`materializer`](https://github.com/ba
 
 `--fail-fast` controls behaviour on parse failure: false (default) records the failure and continues; true aborts the whole stream.
 
+### Two shape-map dialects
+
+Jena 6's `ShapeMap` only models a node or a single triple pattern as the focus selector — the `SPARQL '<query>' @ <Shape>` entries from the broader [ShEx Shape Map spec](https://shexspec.github.io/shape-map/) aren't accepted by Jena's grammar. `go-cam-shapes.shapeMap` (28 entries, all property-path-based class membership queries) needs them, so `Validators.loadShex` sniffs the first non-blank, non-comment line of the shape map file: if it starts with `SPARQL`, `SparqlShapeMapParser` parses entries into a `Vector[(Query, shapeRef)]` carried as a `SparqlShapeMap`; otherwise Jena parses it as `StaticShapeMap`. The two variants are sealed under `LoadedShapeMap`, so the per-model code path knows whether it has to re-resolve focus nodes against the validation graph each time. Static maps are fixed at load; SPARQL maps must run their queries against `model ∪ context` per model — they cannot be cached.
+
 ### CLI: tagged-input args, no subcommand
 
 `JenaBatchConfig` uses case-app, but unlike materializer there's no command routing — the tool only does one thing. `--shex` and `--query` are repeatable with **id-tagged** values: `--shex gpad=schema.shex=map.shapeMap` and `--query disconnected_individuals=path.rq`. The id is the key under which results appear in the per-model JSON, so consumers don't need to round-trip via filename heuristics. The `ShexInput` / `QueryInput` parsers live in `JenaBatchConfig`'s companion object; `Main` imports them via `import org.renci.jenabatch.JenaBatchConfig._` because Scala 2's macro-driven case-app derivation doesn't always find companion-object implicits during `Parser[T]` materialisation.

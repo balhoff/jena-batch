@@ -1,6 +1,6 @@
 package org.renci.jenabatch
 
-import org.apache.jena.graph.Graph
+import org.apache.jena.graph.{Graph, Node, NodeFactory}
 import org.apache.jena.graph.compose.Union
 import org.apache.jena.query.{ARQ, Query, QueryExecutionFactory, QueryFactory, QuerySolution}
 import org.apache.jena.rdf.model.{Model, ModelFactory}
@@ -10,6 +10,7 @@ import org.apache.jena.shex.{ShapeMap, Shex, ShexRecord, ShexSchema, ShexStatus,
 import org.apache.jena.sys.JenaSystem
 import zio._
 
+import java.nio.file.{Files, Paths}
 import java.util.function.Consumer
 import scala.collection.immutable.ListMap
 import scala.collection.mutable
@@ -17,7 +18,31 @@ import scala.jdk.CollectionConverters._
 import scala.util.Using
 import scala.util.control.NonFatal
 
-final case class LoadedShex(id: String, schema: ShexSchema, shapeMap: ShapeMap, contextGraph: Option[Graph])
+/**
+  * The shape map a [[LoadedShex]] carries. Static maps are parsed by Jena's
+  * grammar at load time; SPARQL maps must be re-resolved per model because
+  * the focus-node set depends on the model under validation.
+  */
+sealed trait LoadedShapeMap
+
+final case class StaticShapeMap(map: ShapeMap) extends LoadedShapeMap
+
+/** A list of SPARQL `(query, shapeRef)` pairs. The query's first projection
+  * variable is bound to a focus node; only IRI bindings are forwarded to ShEx
+  * (matching ShEx Shape Map semantics — literals/blank-node selectors are
+  * possible in principle but not used by any current go-shapes shape map). */
+final case class SparqlShapeMap(entries: Vector[SparqlShapeMap.Entry]) extends LoadedShapeMap
+
+object SparqlShapeMap {
+  final case class Entry(query: Query, shapeRef: Node)
+}
+
+final case class LoadedShex(
+  id: String,
+  schema: ShexSchema,
+  shapeMap: LoadedShapeMap,
+  contextGraph: Option[Graph]
+)
 
 final case class LoadedQuery(id: String, query: Query)
 
@@ -43,7 +68,33 @@ object Validators {
 
   def loadShex(input: ShexInput, contextPaths: List[String] = Nil): Task[LoadedShex] = jenaBlocking {
     val schema = Shex.readSchema(input.schemaPath)
-    val shapeMap = Shex.readShapeMap(input.mapPath)
+    val mapContents = Files.readString(Paths.get(input.mapPath))
+    val shapeMap: LoadedShapeMap =
+      if (SparqlShapeMapParser.isSparqlFormat(mapContents)) {
+        val entries = SparqlShapeMapParser.parse(mapContents).map { e =>
+          val query =
+            try QueryFactory.create(e.query)
+            catch {
+              case NonFatal(t) =>
+                throw new IllegalArgumentException(
+                  s"ShEx '${input.id}': could not parse SPARQL shape map query '${e.query}': ${t.getMessage}",
+                  t
+                )
+            }
+          if (!query.isSelectType)
+            throw new IllegalArgumentException(
+              s"ShEx '${input.id}': SPARQL shape map query must be a SELECT (got: ${e.query})"
+            )
+          if (query.getResultVars.isEmpty)
+            throw new IllegalArgumentException(
+              s"ShEx '${input.id}': SPARQL shape map query has no projection variables (got: ${e.query})"
+            )
+          SparqlShapeMap.Entry(query, NodeFactory.createURI(e.shapeIri))
+        }
+        SparqlShapeMap(entries)
+      } else {
+        StaticShapeMap(Shex.readShapeMap(input.mapPath))
+      }
     val contextGraph = loadContextGraph(contextPaths)
     LoadedShex(input.id, schema, shapeMap, contextGraph)
   }
@@ -116,7 +167,11 @@ object Validators {
 
   def runShex(loaded: LoadedShex, graph: Graph): Task[ShexResult] = jenaBlocking {
     val validationGraph = loaded.contextGraph.map(context => new Union(graph, context)).getOrElse(graph)
-    val report = ShexValidator.get().validate(validationGraph, loaded.schema, loaded.shapeMap)
+    val effectiveMap = loaded.shapeMap match {
+      case StaticShapeMap(map)      => map
+      case SparqlShapeMap(entries)  => buildSparqlShapeMap(entries, validationGraph)
+    }
+    val report = ShexValidator.get().validate(validationGraph, loaded.schema, effectiveMap)
     val nonConformant = mutable.ArrayBuffer.empty[NonConformantNode]
     report.forEachReport(new Consumer[ShexRecord] {
       override def accept(entry: ShexRecord): Unit =
@@ -149,6 +204,30 @@ object Validators {
   }
 
   // -- helpers --------------------------------------------------------------
+
+  /** Run each SPARQL shape-map entry against the (model ∪ context) graph and
+    * fold the IRI bindings into an explicit-IRI Jena `ShapeMap`. The first
+    * projection variable supplies the focus node; non-IRI bindings are
+    * silently skipped because Jena's ShEx records expect node-shape pairs and
+    * non-IRI focuses aren't meaningful for any of the go-shapes shape maps in
+    * use today. */
+  private def buildSparqlShapeMap(entries: Vector[SparqlShapeMap.Entry], graph: Graph): ShapeMap = {
+    val model = ModelFactory.createModelForGraph(graph)
+    val builder = ShapeMap.newBuilder()
+    entries.foreach { entry =>
+      val varName = entry.query.getResultVars.asScala.head
+      Using.resource(QueryExecutionFactory.create(entry.query, model)) { exec =>
+        val rs = exec.execSelect()
+        while (rs.hasNext) {
+          val rdfNode = rs.next().get(varName)
+          if (rdfNode != null && rdfNode.isURIResource) {
+            builder.add(rdfNode.asNode, entry.shapeRef)
+          }
+        }
+      }
+    }
+    builder.build()
+  }
 
   private def loadContextGraph(paths: List[String]): Option[Graph] =
     if (paths.isEmpty) None
