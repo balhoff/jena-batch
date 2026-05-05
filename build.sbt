@@ -4,7 +4,7 @@ organization := "org.renci"
 
 name := "jena-batch"
 
-version := "0.4.0"
+version := "0.5.0"
 
 licenses := Seq("MIT license" -> url("https://opensource.org/licenses/MIT"))
 
